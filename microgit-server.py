@@ -2,6 +2,8 @@
 import os
 import shlex
 import sys
+import subprocess
+from optparse import OptionParser
 from twisted.conch.avatar import ConchUser
 from twisted.conch.checkers import SSHPublicKeyDatabase
 from twisted.conch.error import ConchError
@@ -57,10 +59,13 @@ class BallinMockMeta(object):
             'bshi': {
                 'pubkeys': (BSHIPK,),
                 'repos': {
-                    '/poop.git': '/Users/bshi/sandbox/poop/',
+                    '/poop.git': '/home/nand/Code/dyndrop/tmp/blag-examples/',
                 },
             }
         }
+
+    def setscripts(self, public_keys_script):
+        self.public_keys_script = public_keys_script
 
     def repopath(self, username, reponame):
         if username not in self.db:
@@ -68,9 +73,8 @@ class BallinMockMeta(object):
         return self.db[username]['repos'].get(reponame, None)
 
     def pubkeys(self, username):
-        if username not in self.db:
-            return None
-        return self.db[username]['pubkeys']
+        keys = subprocess.check_output([self.public_keys_script, username])
+        return keys.split('\n')
 
 
 def find_git_shell():
@@ -147,13 +151,31 @@ class GitServer(SSHFactory):
     portal = Portal(GitRealm(authmeta))
     portal.registerChecker(GitPubKeyChecker(authmeta))
 
-    def __init__(self, privkey):
-        pubkey = '.'.join((privkey, 'pub'))
-        self.privateKeys = {'ssh-rsa': Key.fromFile(privkey)}
+    def __init__(self, server_privkey, public_keys_script):
+        pubkey = '.'.join((server_privkey, 'pub'))
+        self.privateKeys = {'ssh-rsa': Key.fromFile(server_privkey)}
         self.publicKeys = {'ssh-rsa': Key.fromFile(pubkey)}
+
+        self.authmeta.setscripts(public_keys_script)
 
 
 if __name__ == '__main__':
+
+    usage = "usage: %prog [options]"
+    parser = OptionParser(usage=usage)
+    parser.add_option("-i", "--identity-file", dest="server_identity_file",
+        help="Use FILE as the SSH identity file of the server [default: %default]", 
+        metavar="FILE",
+        default="~/.ssh/id_rsa")
+    parser.add_option("-k", "--public-keys-script", dest="public_keys_script",
+        help="FILE is to be executed to return the public keys of a user [default: %default]",
+        metavar="FILE", default="./hooks/get_pub_keys.sh")
+    parser.add_option("-p", "--port", type="int", dest="port", default=22,
+        help="The port number of the server [default: %default]")
+    (options, args) = parser.parse_args()
+
     components.registerAdapter(GitSession, GitConchUser, ISession)
-    reactor.listenTCP(2222, GitServer(sys.argv[1]))
+    reactor.listenTCP(options.port, 
+        GitServer(os.path.expanduser(options.server_identity_file), options.public_keys_script)
+        )
     reactor.run()
