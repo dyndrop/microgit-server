@@ -6,6 +6,7 @@ import subprocess
 from optparse import OptionParser
 from twisted.conch.avatar import ConchUser
 from twisted.conch.checkers import SSHPublicKeyDatabase
+from twisted.conch.checkers import UNIXPasswordDatabase
 from twisted.conch.error import ConchError
 from twisted.conch.ssh import common
 from twisted.conch.ssh.session import (ISession,
@@ -14,7 +15,9 @@ from twisted.conch.ssh.session import (ISession,
 from twisted.conch.ssh.factory import SSHFactory
 from twisted.conch.ssh.keys import Key
 from twisted.cred.portal import IRealm, Portal
+from twisted.cred.error import UnauthorizedLogin, UnhandledCredentials
 from twisted.internet import reactor
+from twisted.internet import defer
 from twisted.python import components, log
 from zope import interface
 log.startLogging(sys.stderr)
@@ -29,13 +32,17 @@ class IGitMetadata(interface.Interface):
         the file system.
         '''
 
-    def pubkeys(self, username):
+    def get_pub_keys(self, username):
         '''
         Given a username return a list of OpenSSH compatible public key
         strings.
         '''
 
-BSHIPK = r'ssh-dss AAAAB3NzaC1kc3MAAACBAJW6g6QMZ7n7SJG3WBUcMTlgYJiuX61CPOMQj0F3srftuB81T5Y7r7T72zsov81crIi+PU5GRO80Umhu68nSPQmfXmYzkqNgU0XFHXuZXYnCW9l6hxn94Qr+XBPZMLwHUQvVzaFneFuFXS0Lx3iKa3HH43OOCjDkDnLVx39rvvUdAAAAFQCEBsryZKy+t8iNwGjKd4Q34F2T/wAAAIAV0CwoJHYCks4WXKTOLA080JaeFwBQEBJZgi5itrHMZJpISPQNrXV7EUTTMYLk5m4rWdiWYX24Witbu8VBwrRW8FMqLpd1x5fXvJrfqFxcJryASl6fCM3PVSmRgRMiJ1MyqKfovjur959k7LEtQsMEDgMnDgBwawHy8t38fMA7rwAAAIAEqVDoUOoZHr6l0Q/I+YpbZiCj1c6Ny5tfl+fy5bt2Ab6I7R3bUMUM2I5ycpGgFpIU96JiXbA35ga7VXOCn5qmAOjOk4DtmGIomi+z4k6kViQr1IFAb366Dyh/CV/Dkm7b9klugjZW/xsiBibS5kgTD1eFxbvvW10a8+8iJLgoiQ== bshi@Bo-Shis-MacBook-Pro.local'
+    def check_credentials(self, username, password):
+        '''
+        Given a username and a password return whether they are valid.
+        '''
+
 
 class BallinMockMeta(object):
     'Mock persistence layer.'
@@ -57,25 +64,29 @@ class BallinMockMeta(object):
                 },
             },
             'bshi': {
-                'pubkeys': (BSHIPK,),
+                'pubkeys': ('e',),
                 'repos': {
                     '/poop.git': '/home/nand/Code/dyndrop/tmp/blag-examples/',
                 },
             }
         }
 
-    def setscripts(self, public_keys_script):
+    def set_scripts(self, public_keys_script, check_credentials_script):
         self.public_keys_script = public_keys_script
+        self.check_credentials_script = check_credentials_script
 
     def repopath(self, username, reponame):
         if username not in self.db:
             return None
         return self.db[username]['repos'].get(reponame, None)
 
-    def pubkeys(self, username):
+    def get_pub_keys(self, username):
         keys = subprocess.check_output([self.public_keys_script, username])
         return keys.split('\n')
 
+    def check_credentials(self, username, password):
+        result = subprocess.call([self.check_credentials_script, username, password])
+        return (result == 0)
 
 def find_git_shell():
     # Find git-shell path.
@@ -140,29 +151,42 @@ class GitPubKeyChecker(SSHPublicKeyDatabase):
         self.meta = meta
 
     def checkKey(self, credentials):
-        for k in self.meta.pubkeys(credentials.username):
+        for k in self.meta.get_pub_keys(credentials.username):
             if Key.fromString(k).blob() == credentials.blob:
                 return True
         return False
+
+class GitPasswordChecker(UNIXPasswordDatabase):
+    def __init__(self, meta):
+        self.meta = meta
+
+    def requestAvatarId(self, credentials):
+        if self.meta.check_credentials(credentials.username, credentials.password):
+            return defer.succeed(credentials.username)
+        return defer.fail(UnauthorizedLogin("unable to verify password"))
 
 
 class GitServer(SSHFactory):
     authmeta = BallinMockMeta()
     portal = Portal(GitRealm(authmeta))
     portal.registerChecker(GitPubKeyChecker(authmeta))
+    portal.registerChecker(GitPasswordChecker(authmeta))
 
-    def __init__(self, server_privkey, public_keys_script):
+    def __init__(self, server_privkey, public_keys_script, check_credentials_script):
         pubkey = '.'.join((server_privkey, 'pub'))
         self.privateKeys = {'ssh-rsa': Key.fromFile(server_privkey)}
         self.publicKeys = {'ssh-rsa': Key.fromFile(pubkey)}
 
-        self.authmeta.setscripts(public_keys_script)
+        self.authmeta.set_scripts(public_keys_script, check_credentials_script)
 
 
 if __name__ == '__main__':
 
     usage = "usage: %prog [options]"
     parser = OptionParser(usage=usage)
+    parser.add_option("-c", "--check-credentials-script", dest="check_credentials_script",
+        help="FILE is to be executed to check credentials of a user [default: %default]",
+        metavar="FILE", default="./hooks/check_credentials.sh")
     parser.add_option("-i", "--identity-file", dest="server_identity_file",
         help="Use FILE as the SSH identity file of the server [default: %default]", 
         metavar="FILE",
@@ -176,6 +200,8 @@ if __name__ == '__main__':
 
     components.registerAdapter(GitSession, GitConchUser, ISession)
     reactor.listenTCP(options.port, 
-        GitServer(os.path.expanduser(options.server_identity_file), options.public_keys_script)
+        GitServer(os.path.expanduser(options.server_identity_file), 
+            options.public_keys_script,
+            options.check_credentials_script)
         )
     reactor.run()
