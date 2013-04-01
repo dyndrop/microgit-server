@@ -186,17 +186,31 @@ if __name__ == '__main__':
     parser = OptionParser(usage=usage)
     parser.add_option("-c", "--check-credentials-script", dest="check_credentials_script",
         help="FILE is to be executed to check credentials of a user [default: %default]",
-        metavar="FILE", default="./hooks/check_credentials.sh")
+        metavar="FILE")
     parser.add_option("-i", "--identity-file", dest="server_identity_file",
         help="Use FILE as the SSH identity file of the server [default: %default]", 
         metavar="FILE",
         default="~/.ssh/id_rsa")
     parser.add_option("-k", "--public-keys-script", dest="public_keys_script",
         help="FILE is to be executed to return the public keys of a user [default: %default]",
-        metavar="FILE", default="./hooks/get_pub_keys.sh")
+        metavar="FILE")
     parser.add_option("-p", "--port", type="int", dest="port", default=22,
         help="The port number of the server [default: %default]")
     (options, args) = parser.parse_args()
+
+    if not options.public_keys_script:
+        print "Error: The path to the public keys script is missing."
+        sys.exit(1)
+    if not os.path.isfile(options.public_keys_script):
+        print "Error: The public keys script path is incorrect."
+        sys.exit(1)
+
+    if not options.check_credentials_script:
+        print "Error: The path to the credentials check script is missing."
+        sys.exit(1)
+    if not os.path.isfile(options.check_credentials_script):
+        print "Error: The credentials check script path is incorrect."
+        sys.exit(1)
 
     components.registerAdapter(GitSession, GitConchUser, ISession)
     reactor.listenTCP(options.port, 
