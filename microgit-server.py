@@ -47,38 +47,17 @@ class IGitMetadata(interface.Interface):
 class BallinMockMeta(object):
     'Mock persistence layer.'
     interface.implements(IGitMetadata)
-    # To test, you need to fill in pubkeys sequences with real public keys.
-    def __init__(self):
-        self.db = {
-            'jane': {
-                'pubkeys': ('a', 'b'),
-                'repos': {
-                    '/foobar.git': '/path/to/foobar.git',
-                    '/project.git': '/path/to/project.git',
-                },
-            },
-            'john': {
-                'pubkeys': ('c', 'd'),
-                'repos': {
-                    '/helloworld.git': '/path/to/helloworld.git',
-                },
-            },
-            'bshi': {
-                'pubkeys': ('e',),
-                'repos': {
-                    '/poop.git': '/home/nand/Code/dyndrop/tmp/blag-examples/',
-                },
-            }
-        }
 
-    def set_scripts(self, public_keys_script, check_credentials_script):
+    def set_scripts(self, public_keys_script, check_credentials_script, repo_location_script):
         self.public_keys_script = public_keys_script
         self.check_credentials_script = check_credentials_script
+        self.repo_location_script = repo_location_script
 
     def repopath(self, username, reponame):
-        if username not in self.db:
-            return None
-        return self.db[username]['repos'].get(reponame, None)
+        result = subprocess.check_output([self.repo_location_script, reponame, username])
+        if result == "":
+            result = None 
+        return result
 
     def get_pub_keys(self, username):
         keys = subprocess.check_output([self.public_keys_script, username])
@@ -152,7 +131,7 @@ class GitPubKeyChecker(SSHPublicKeyDatabase):
 
     def checkKey(self, credentials):
         for k in self.meta.get_pub_keys(credentials.username):
-            if Key.fromString(k).blob() == credentials.blob:
+            if k != "" and Key.fromString(k).blob() == credentials.blob:
                 return True
         return False
 
@@ -172,12 +151,12 @@ class GitServer(SSHFactory):
     portal.registerChecker(GitPubKeyChecker(authmeta))
     portal.registerChecker(GitPasswordChecker(authmeta))
 
-    def __init__(self, server_privkey, public_keys_script, check_credentials_script):
+    def __init__(self, server_privkey, public_keys_script, check_credentials_script, repo_location_script):
         pubkey = '.'.join((server_privkey, 'pub'))
         self.privateKeys = {'ssh-rsa': Key.fromFile(server_privkey)}
         self.publicKeys = {'ssh-rsa': Key.fromFile(pubkey)}
 
-        self.authmeta.set_scripts(public_keys_script, check_credentials_script)
+        self.authmeta.set_scripts(public_keys_script, check_credentials_script, repo_location_script)
 
 
 if __name__ == '__main__':
@@ -185,17 +164,20 @@ if __name__ == '__main__':
     usage = "usage: %prog [options]"
     parser = OptionParser(usage=usage)
     parser.add_option("-c", "--check-credentials-script", dest="check_credentials_script",
-        help="FILE is to be executed to check credentials of a user [default: %default]",
+        help="FILE is to be executed to check credentials of a user",
         metavar="FILE")
     parser.add_option("-i", "--identity-file", dest="server_identity_file",
         help="Use FILE as the SSH identity file of the server [default: %default]", 
         metavar="FILE",
         default="~/.ssh/id_rsa")
     parser.add_option("-k", "--public-keys-script", dest="public_keys_script",
-        help="FILE is to be executed to return the public keys of a user [default: %default]",
+        help="FILE is to be executed to return the public keys of a user",
         metavar="FILE")
     parser.add_option("-p", "--port", type="int", dest="port", default=22,
         help="The port number of the server [default: %default]")
+    parser.add_option("-r", "--repo-location-script", dest="repo_location_script",
+        help="FILE is to be executed to return the filesystem path of a requested repository",
+        metavar="FILE")
     (options, args) = parser.parse_args()
 
     if not options.public_keys_script:
@@ -212,10 +194,18 @@ if __name__ == '__main__':
         print "Error: The credentials check script path is incorrect."
         sys.exit(1)
 
+    if not options.repo_location_script:
+        print "Error: The path to the repository location script is missing."
+        sys.exit(1)
+    if not os.path.isfile(options.repo_location_script):
+        print "Error: The repository location script path is incorrect."
+        sys.exit(1)
+
     components.registerAdapter(GitSession, GitConchUser, ISession)
     reactor.listenTCP(options.port, 
         GitServer(os.path.expanduser(options.server_identity_file), 
             options.public_keys_script,
-            options.check_credentials_script)
+            options.check_credentials_script,
+            options.repo_location_script)
         )
     reactor.run()
