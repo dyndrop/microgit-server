@@ -102,13 +102,37 @@ class GitSession(object):
     def closed(self): pass
 
 
+class PatchedSSHSession(SSHSession):
+
+    #
+    # If you don't add these two method overrides, if a user import quite some
+    # data (e.g. clone big repos), and the remote window and the local 
+    # outgoing data buffer is filled, SSHSession seems to be discarding 
+    # the remaining data.  As a result, you get random errors like:
+    # 
+    # $ git clone xxxxxx
+    # Cloning into 'booyah12'...
+    # remote: Counting objects: 1154, done.
+    # remote: Compressing objects: 100% (1139/1139), done
+    # Receiving objects: 72%
+    # fatal: The remote end hung up unexpected
+    # fatal: early EOFs:
+    # fatal: index-pack failed
+
+    def stopWriting(self):
+        self.client.transport.pauseProducing()
+ 
+    def startWriting(self):
+        self.client.transport.resumeProducing()
+
+
 class GitConchUser(ConchUser):
     shell = find_git_shell()
 
     def __init__(self, username, meta):
         ConchUser.__init__(self)
         self.username = username
-        self.channelLookup.update({"session": SSHSession})
+        self.channelLookup.update({"session": PatchedSSHSession})
         self.meta = meta
 
     def logout(self): pass
