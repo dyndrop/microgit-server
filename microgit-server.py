@@ -54,13 +54,13 @@ class BallinMockMeta(object):
         self.repo_location_script = repo_location_script
 
     def repopath(self, username, reponame):
-        result = subprocess.check_output([self.repo_location_script, reponame, username])
+        result = subprocess.Popen([self.repo_location_script, reponame, username],stdout=subprocess.PIPE).communicate()[0]
         if result == "":
             result = None 
         return result
 
     def get_pub_keys(self, username):
-        keys = subprocess.check_output([self.public_keys_script, username])
+        keys = subprocess.Popen([self.public_keys_script, username],stdout=subprocess.PIPE).communicate()[0]
         return keys.split('\n')
 
     def check_credentials(self, username, password):
